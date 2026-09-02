@@ -331,7 +331,16 @@ function normalizeManagerConfig(cfg) {
     : ["Начальная","Развитие","Слияние","Залив. инф","Пред. предлог","72 часа"];
   cfg.thesisTemplates = Array.isArray(cfg.thesisTemplates) ? cfg.thesisTemplates : [];
   cfg.blockTemplates = Array.isArray(cfg.blockTemplates) ? cfg.blockTemplates : [];
-  cfg.markers = Array.isArray(cfg.markers) ? cfg.markers.map(function(x){return String(x||"").trim();}).filter(function(x){return !!x;}) : [];
+  cfg.markers = Array.isArray(cfg.markers) ? cfg.markers.map(function(x){
+    if (x && typeof x === "object") {
+      return {
+        id:String(x.id || ("mrk_"+Utilities.getUuid())),
+        title:String(x.title || x.name || "Маркер").trim(),
+        phrases:Array.isArray(x.phrases) ? x.phrases.map(function(p){return String(p||"").trim();}).filter(function(p){return !!p;}) : []
+      };
+    }
+    return {id:"mrk_"+Utilities.getUuid(),title:String(x||"").trim(),phrases:[]};
+  }).filter(function(x){return !!x.title;}) : [];
   cfg.statisticsRows = Array.isArray(cfg.statisticsRows) ? cfg.statisticsRows : [];
   cfg.inbox = cfg.inbox && typeof cfg.inbox === "object" ? cfg.inbox : {};
   ["admin","observer"].forEach(function(kind){
@@ -533,12 +542,11 @@ function handleSaveManagerStatistics(body) {
           return {
             id:String(r.id || ("stat_"+Utilities.getUuid())),
             date:String(r.date || "").slice(0,10),
-            metric:String(r.metric || "").trim(),
+            metric:["Общее","Прилипло"].indexOf(String(r.metric || "")) >= 0 ? String(r.metric) : "Общее",
             value:String(r.value || "").trim(),
-            comment:String(r.comment || "").trim(),
             updatedAt:new Date().toISOString()
           };
-        }).filter(function(r){return !!(r.date||r.metric||r.value||r.comment);})
+        }).filter(function(r){return !!(r.date||r.value);})
       : [];
 
     state.audit = Array.isArray(state.audit) ? state.audit : [];
@@ -597,7 +605,14 @@ function handleSaveManagerSettings(body) {
       : [];
 
     cfg.markers = Array.isArray(body.markers)
-      ? body.markers.map(function(x){return String(x||"").trim();}).filter(function(x){return !!x;})
+      ? body.markers.map(function(x){
+          if (x && typeof x === "object") return {
+            id:String(x.id || ("mrk_"+Utilities.getUuid())),
+            title:String(x.title || x.name || "Маркер").trim(),
+            phrases:Array.isArray(x.phrases) ? x.phrases.map(function(p){return String(p||"").trim();}).filter(function(p){return !!p;}) : []
+          };
+          return {id:"mrk_"+Utilities.getUuid(),title:String(x||"").trim(),phrases:[]};
+        }).filter(function(x){return !!x.title;})
       : [];
 
     syncManagerTemplatesServer(state, managerId);
@@ -1483,7 +1498,7 @@ function mirrorSheets(state) {
   const pcRows = [["№ проекта","Имя","Тип","Автор","Дата","Комментарий"]];
   const mdRows = [["Менеджер","Логин","Название шкалы","Стадии воронки","Кол-во тезисов","Кол-во блоков","Блокнот","Блокнот обновлён","Сообщение административных правок","Дата","Прочитано","Сообщение наблюдателя","Дата","Прочитано"]];
   const trRows = [["Обучающийся","Логин","Материалов","Прочитано","Прогресс %","Последняя активность"]];
-  const statRows = [["Менеджер","Логин","Дата","Показатель","Значение","Комментарий","Обновлено"]];
+  const statRows = [["Менеджер","Логин","Дата","Показатель","Значение","Обновлено"]];
 
   (state.users || []).forEach(function(u){
     uRows.push([
@@ -1539,7 +1554,6 @@ function mirrorSheets(state) {
         r.date || "",
         r.metric || "",
         r.value || "",
-        r.comment || "",
         r.updatedAt || ""
       ]);
     });

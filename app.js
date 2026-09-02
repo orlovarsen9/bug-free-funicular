@@ -1,6 +1,6 @@
 
 (() => {
-  const API_URL = "https://script.google.com/macros/s/AKfycbzma6piL2URnt-8LToDYCvDBj3ud_YISuYLdJLZRSWQJf2Wh7FKc1ygAJwHrLya64lzag/exec";
+  const API_URL = "https://script.google.com/macros/s/AKfycbxY21vNSnDTqZYXwS6rkoHiliqdSKob-wQkkgDmD9v-mX1PAgXU0SAXjC9YFg2bgD2hhw/exec";
   const CACHE_KEY = "project_crm_shared_cache_v24";
   const sessionKey = "project_crm_shared_session_v24";
 
@@ -198,16 +198,26 @@
   }
 
   async function saveManagerStatisticsAtomic(managerId,rows){
-    const data=await api("saveManagerStatistics",{managerId,rows});
-    if(data.state){
-      db=data.state;
+    try{
+      const data=await api("saveManagerStatistics",{managerId,rows});
+      if(data.state){
+        db=data.state;
+      }else if(data.config){
+        db.managerConfigs=db.managerConfigs||{};
+        db.managerConfigs[managerId]=data.config;
+      }
       try{localStorage.setItem(CACHE_KEY,JSON.stringify(db));}catch(_){}
-    }else if(data.config){
-      db.managerConfigs=db.managerConfigs||{};
-      db.managerConfigs[managerId]=data.config;
-      try{localStorage.setItem(CACHE_KEY,JSON.stringify(db));}catch(_){}
+      return data;
+    }catch(e){
+      // Если на опубликованном Apps Script ещё нет отдельного action,
+      // сохраняем статистику через общий saveState.
+      if(!isUnknownActionError(e)) throw e;
+      const cfg=managerConfig(managerId);
+      cfg.statisticsRows=JSON.parse(JSON.stringify(rows||[]));
+      const ok=await syncRemote(false);
+      if(!ok) throw new Error("Сервер не подтвердил сохранение статистики");
+      return {ok:true,config:cfg,state:db};
     }
-    return data;
   }
 
   async function deleteProjectForeverAtomic(projectId){
@@ -594,7 +604,14 @@
     });
     cfg.thesisTemplates=Array.isArray(cfg.thesisTemplates)?cfg.thesisTemplates:[];
     cfg.blockTemplates=Array.isArray(cfg.blockTemplates)?cfg.blockTemplates:[];
-    cfg.markers=Array.isArray(cfg.markers)?cfg.markers.map(x=>String(x||"").trim()).filter(Boolean):[];
+    cfg.markers=Array.isArray(cfg.markers)?cfg.markers.map((x,i)=>{
+      if(x && typeof x==="object") return {
+        id:String(x.id||uid("mrk_")),
+        title:String(x.title||x.name||"Маркер").trim(),
+        phrases:Array.isArray(x.phrases)?x.phrases.map(p=>String(p||"").trim()).filter(Boolean):[]
+      };
+      return {id:uid("mrk_"),title:String(x||"").trim(),phrases:[]};
+    }).filter(x=>x.title):[];
     cfg.statisticsRows=Array.isArray(cfg.statisticsRows)?cfg.statisticsRows:[];
     return cfg;
   }
@@ -703,10 +720,10 @@
 
   function geoLabel(c){
     const type=c.geoType||"";
-    if(type==="russia") return `🇷🇺 Классика${c.region?` · ${esc(c.region)}`:""}`;
-    if(type==="belarus") return "🇧🇾 Усы";
-    if(type==="europe") return "🌈 Радуга";
-    if(type==="other") return `📍 Иное${c.region?` · ${esc(c.region)}`:""}`;
+    if(type==="russia") return ` Классика${c.region?` · ${esc(c.region)}`:""}`;
+    if(type==="belarus") return " Усы";
+    if(type==="europe") return " Радуга";
+    if(type==="other") return ` Иное${c.region?` · ${esc(c.region)}`:""}`;
     return "📍 Не указано";
   }
 
@@ -1061,7 +1078,7 @@
         </div>
         <div class="notebook-marker-panel" id="notebookMarkerPanel" hidden>
           <div class="notebook-marker-title">Маркеры наблюдателя</div>
-          <div class="notebook-marker-list">${(cfg.markers||[]).length?(cfg.markers||[]).map((m,i)=>`<button class="notebook-marker-chip" type="button" data-notebook-marker="${i}">${esc(m)}</button>`).join(""):'<span class="muted small">Наблюдатель ещё не добавил маркеры.</span>'}</div>
+          <div class="notebook-marker-list">${(cfg.markers||[]).length?(cfg.markers||[]).map((m,i)=>`<button class="notebook-marker-chip" type="button" data-notebook-marker="${i}">${esc(m.title||"Маркер")}</button>`).join(""):'<span class="muted small">Наблюдатель ещё не добавил маркеры.</span>'}</div>
         </div>
         <textarea id="managerNotebook" class="notebook-textarea" placeholder="Личные рабочие заметки...">${esc(startText)}</textarea>
       </div>`);
@@ -1078,17 +1095,22 @@
         markerToggle.classList.toggle("active",!markerPanel.hidden);
       };
       markerPanel.querySelectorAll("[data-notebook-marker]").forEach(btn=>btn.onclick=()=>{
-        const marker=(cfg.markers||[])[Number(btn.dataset.notebookMarker)]||"";
+        const marker=(cfg.markers||[])[Number(btn.dataset.notebookMarker)];
         if(!marker)return;
-        const start=ta.selectionStart??ta.value.length;
-        const end=ta.selectionEnd??start;
-        const prefix=(start>0 && !ta.value.slice(0,start).endsWith("\n"))?"\n":"";
-        const insert=`${prefix}[${marker}] `;
-        ta.value=ta.value.slice(0,start)+insert+ta.value.slice(end);
-        ta.focus();
-        const pos=start+insert.length;
-        ta.setSelectionRange(pos,pos);
-        ta.dispatchEvent(new Event("input",{bubbles:true}));
+        const win=document.createElement("div");
+        win.className="modal";
+        win.innerHTML=`<div class="modal-card marker-phrases-modal">
+          <div class="modal-head">
+            <div><h2>${esc(marker.title||"Маркер")}</h2><div class="muted small">Фразы, заданные наблюдателем</div></div>
+            <button class="icon-btn" data-close>×</button>
+          </div>
+          <div class="marker-phrases-list">
+            ${(marker.phrases||[]).length?(marker.phrases||[]).map((p,i)=>`<div class="marker-phrase-row"><span class="marker-phrase-num">${i+1}</span><div>${esc(p)}</div></div>`).join(""):'<div class="empty">Наблюдатель пока не добавил фразы для этого маркера.</div>'}
+          </div>
+          <div class="actions"><button class="btn primary" data-close>Закрыть</button></div>
+        </div>`;
+        document.body.appendChild(win);
+        win.querySelectorAll("[data-close]").forEach(x=>x.onclick=()=>win.remove());
       });
     }
     let saving=false,saveAgain=false;
@@ -1264,11 +1286,12 @@
       </div>
 
       <div class="card config-panel" style="margin-top:14px">
-        <h3>Маркеры для блокнота</h3>
-        <div class="muted small">Наблюдатель задаёт список маркеров. Менеджер увидит их в блокноте по кнопке «Маркеры».</div>
-        <div id="managerMarkers" class="template-list"></div>
-        <div class="template-add-row">
-          <input id="newManagerMarker" placeholder="Например: Срочно / Возражение / Семья">
+        <h3>Маркеры</h3>
+        <div class="muted small">Наблюдатель задаёт название маркера и точные фразы внутри него. Менеджер нажимает маркер и видит отдельное окно с этими фразами.</div>
+        <div id="managerMarkers" class="marker-config-list"></div>
+        <div class="marker-add-box">
+          <input id="newManagerMarker" placeholder="Название маркера">
+          <textarea id="newManagerMarkerPhrases" rows="4" placeholder="Фразы маркера — каждая с новой строки"></textarea>
           <button class="btn primary" id="addManagerMarker">+ Добавить маркер</button>
         </div>
       </div>`:""}
@@ -1286,7 +1309,10 @@
       cfg.markers=Array.isArray(cfg.markers)?cfg.markers:[];
       tbox.innerHTML=cfg.thesisTemplates.length?cfg.thesisTemplates.map(t=>`<div class="template-row"><span>${esc(t.text)}</span><button class="template-del" data-del-thesis="${t.id}">×</button></div>`).join(""):'<div class="muted small">Тезисов пока нет</div>';
       bbox.innerHTML=cfg.blockTemplates.length?cfg.blockTemplates.map(t=>`<div class="template-row"><span>${esc(t.text)}</span>${canManageBlocks?`<button class="template-del" data-del-block="${t.id}">×</button>`:""}</div>`).join(""):'<div class="muted small">Блоков пока нет</div>';
-      if(mbox) mbox.innerHTML=cfg.markers.length?cfg.markers.map((t,i)=>`<div class="template-row"><span>${esc(t)}</span><button class="template-del" data-del-marker="${i}">×</button></div>`).join(""):'<div class="muted small">Маркеров пока нет</div>';
+      if(mbox) mbox.innerHTML=cfg.markers.length?cfg.markers.map((t,i)=>`<div class="marker-config-row">
+        <div class="marker-config-head"><b>${esc(t.title||"Маркер")}</b><button class="template-del" data-del-marker="${i}">×</button></div>
+        <div class="marker-phrases-preview">${(t.phrases||[]).length?(t.phrases||[]).map(p=>`<div>• ${esc(p)}</div>`).join(""):'<span class="muted small">Фраз пока нет</span>'}</div>
+      </div>`).join(""):'<div class="muted small">Маркеров пока нет</div>';
       tbox.querySelectorAll("[data-del-thesis]").forEach(b=>b.onclick=()=>{cfg.thesisTemplates=cfg.thesisTemplates.filter(x=>x.id!==b.dataset.delThesis);renderTpl();});
       if(canManageBlocks) bbox.querySelectorAll("[data-del-block]").forEach(b=>b.onclick=()=>{cfg.blockTemplates=cfg.blockTemplates.filter(x=>x.id!==b.dataset.delBlock);renderTpl();});
       if(mbox) mbox.querySelectorAll("[data-del-marker]").forEach(b=>b.onclick=()=>{cfg.markers.splice(Number(b.dataset.delMarker),1);renderTpl();});
@@ -1309,11 +1335,15 @@
     };
     const addManagerMarkerBtn=modal.querySelector("#addManagerMarker");
     if(addManagerMarkerBtn && canManageThesesAndBlocks) addManagerMarkerBtn.onclick=()=>{
-      const inp=modal.querySelector("#newManagerMarker"), text=(inp?.value||"").trim();
-      if(!text)return;
+      const inp=modal.querySelector("#newManagerMarker");
+      const phrasesInp=modal.querySelector("#newManagerMarkerPhrases");
+      const title=(inp?.value||"").trim();
+      const phrases=(phrasesInp?.value||"").split("\n").map(x=>x.trim()).filter(Boolean);
+      if(!title){alert("Укажите название маркера");return;}
       cfg.markers=Array.isArray(cfg.markers)?cfg.markers:[];
-      if(!cfg.markers.includes(text))cfg.markers.push(text);
+      cfg.markers.push({id:uid("mrk_"),title,phrases});
       if(inp)inp.value="";
+      if(phrasesInp)phrasesInp.value="";
       renderTpl();
     };
     const deleteBossMessage=modal.querySelector("#deleteBossMessage");
@@ -1441,7 +1471,11 @@ const saveManagerConfigBtn=modal.querySelector("#saveManagerConfig");
         stageIndex:0,
         text:String(x.text||"").trim()
       })).filter(x=>x.text);
-      cfg.markers=(cfg.markers||[]).map(x=>String(x||"").trim()).filter(Boolean);
+      cfg.markers=(cfg.markers||[]).map(x=>({
+        id:String(x.id||uid("mrk_")),
+        title:String(x.title||"").trim(),
+        phrases:Array.isArray(x.phrases)?x.phrases.map(p=>String(p||"").trim()).filter(Boolean):[]
+      })).filter(x=>x.title);
 
       syncManagerTemplates(mid);
       (db.clients||[]).filter(p=>p.managerId===mid).forEach(p=>{
@@ -1476,7 +1510,7 @@ const saveManagerConfigBtn=modal.querySelector("#saveManagerConfig");
       <div class="section-head">
         <div>
           <h1>Статистика</h1>
-          <p class="muted">Статистика ведётся отдельно по каждому менеджеру. Данные заполняет наблюдатель.</p>
+          <p class="muted">Статистика по каждому менеджеру. Заполняет наблюдатель.</p>
         </div>
       </div>
       <div class="stats-manager-list">
@@ -1492,7 +1526,13 @@ const saveManagerConfigBtn=modal.querySelector("#saveManagerConfig");
                   <div class="muted small">${rows.length} строк статистики</div>
                 </div>
               </div>
-              <button class="btn primary" data-open-manager-stats="${m.id}">Открыть статистику</button>
+              <button class="btn primary" data-open-manager-stats="${m.id}">Редактировать</button>
+            </div>
+            <div class="stats-inline-wrap">
+              ${rows.length?`<table class="stats-inline-table">
+                <thead><tr><th>Дата</th><th>Показатель</th><th>Значение</th></tr></thead>
+                <tbody>${rows.map(r=>`<tr><td>${esc(r.date||"—")}</td><td>${esc(r.metric||"—")}</td><td>${esc(r.value||"—")}</td></tr>`).join("")}</tbody>
+              </table>`:'<div class="empty small">Статистика пока не заполнена</div>'}
             </div>
           </div>`;
         }).join(""):'<div class="empty">Менеджеров пока нет</div>'}
@@ -1501,6 +1541,17 @@ const saveManagerConfigBtn=modal.querySelector("#saveManagerConfig");
     document.querySelectorAll("[data-open-manager-stats]").forEach(btn=>{
       btn.onclick=()=>openManagerStatistics(btn.dataset.openManagerStats);
     });
+
+    // Подтягиваем свежие данные в фоне и обновляем экран, если они изменились.
+    setTimeout(async()=>{
+      try{
+        const before=JSON.stringify((db.managerConfigs||{}));
+        const ok=await fetchState();
+        if(ok && currentRoute==="statistics" && JSON.stringify((db.managerConfigs||{}))!==before && !document.querySelector(".modal")){
+          observerStatisticsView();
+        }
+      }catch(e){console.warn("statistics refresh",e);}
+    },300);
   }
 
   function openManagerStatistics(managerId){
@@ -1510,7 +1561,13 @@ const saveManagerConfigBtn=modal.querySelector("#saveManagerConfig");
     if(!manager)return;
     const cfg=managerConfig(managerId);
     cfg.statisticsRows=Array.isArray(cfg.statisticsRows)?cfg.statisticsRows:[];
-    let draft=JSON.parse(JSON.stringify(cfg.statisticsRows));
+    let draft=JSON.parse(JSON.stringify(cfg.statisticsRows)).map(r=>({
+      id:String(r.id||uid("stat_")),
+      date:String(r.date||""),
+      metric:["Общее","Прилипло"].includes(String(r.metric||""))?String(r.metric):"Общее",
+      value:String(r.value||""),
+      updatedAt:String(r.updatedAt||"")
+    }));
 
     const modal=document.createElement("div");
     modal.className="modal";
@@ -1518,19 +1575,18 @@ const saveManagerConfigBtn=modal.querySelector("#saveManagerConfig");
       <div class="modal-head">
         <div>
           <h2>Статистика · ${esc(manager.name||manager.login||"Менеджер")}</h2>
-          <div class="muted small">Мини-таблицу заполняет и редактирует наблюдатель.</div>
+          <div class="muted small">1 — Общее · 2 — Прилипло</div>
         </div>
         <button class="icon-btn" data-close>×</button>
       </div>
 
       <div class="stats-table-wrap">
-        <table class="stats-mini-table">
+        <table class="stats-mini-table stats-mini-table-simple">
           <thead>
             <tr>
               <th>Дата</th>
               <th>Показатель</th>
               <th>Значение</th>
-              <th>Комментарий</th>
               <th></th>
             </tr>
           </thead>
@@ -1540,7 +1596,6 @@ const saveManagerConfigBtn=modal.querySelector("#saveManagerConfig");
 
       <div class="stats-add-bar">
         <button class="btn" id="addStatsRow">+ Добавить строку</button>
-        <span class="muted small">Например: дата → звонки → 15 → хороший результат.</span>
       </div>
 
       <div class="actions">
@@ -1555,21 +1610,23 @@ const saveManagerConfigBtn=modal.querySelector("#saveManagerConfig");
     const renderRows=()=>{
       tbody.innerHTML=draft.length?draft.map((r,i)=>`<tr>
         <td><input type="date" data-stat-date="${i}" value="${esc(r.date||"")}"></td>
-        <td><input data-stat-metric="${i}" value="${esc(r.metric||"")}" placeholder="Показатель"></td>
+        <td>
+          <select data-stat-metric="${i}">
+            <option value="Общее" ${r.metric==="Общее"?"selected":""}>1. Общее</option>
+            <option value="Прилипло" ${r.metric==="Прилипло"?"selected":""}>2. Прилипло</option>
+          </select>
+        </td>
         <td><input data-stat-value="${i}" value="${esc(r.value||"")}" placeholder="Значение"></td>
-        <td><input data-stat-comment="${i}" value="${esc(r.comment||"")}" placeholder="Комментарий"></td>
         <td><button class="btn danger small-btn" data-delete-stat="${i}">×</button></td>
-      </tr>`).join(""):`<tr><td colspan="5"><div class="empty small">Статистика пока не заполнена</div></td></tr>`;
+      </tr>`).join(""):`<tr><td colspan="4"><div class="empty small">Статистика пока не заполнена</div></td></tr>`;
 
       draft.forEach((r,i)=>{
         const d=tbody.querySelector(`[data-stat-date="${i}"]`);
         const m=tbody.querySelector(`[data-stat-metric="${i}"]`);
         const v=tbody.querySelector(`[data-stat-value="${i}"]`);
-        const c=tbody.querySelector(`[data-stat-comment="${i}"]`);
         if(d)d.oninput=()=>r.date=d.value;
-        if(m)m.oninput=()=>r.metric=m.value;
+        if(m)m.onchange=()=>r.metric=m.value;
         if(v)v.oninput=()=>r.value=v.value;
-        if(c)c.oninput=()=>r.comment=c.value;
       });
       tbody.querySelectorAll("[data-delete-stat]").forEach(btn=>btn.onclick=()=>{
         draft.splice(Number(btn.dataset.deleteStat),1);
@@ -1579,20 +1636,25 @@ const saveManagerConfigBtn=modal.querySelector("#saveManagerConfig");
     renderRows();
 
     modal.querySelector("#addStatsRow").onclick=()=>{
-      draft.push({id:uid("stat_"),date:new Date().toISOString().slice(0,10),metric:"",value:"",comment:"",updatedAt:nowISO()});
+      draft.push({
+        id:uid("stat_"),
+        date:new Date().toISOString().slice(0,10),
+        metric:"Общее",
+        value:"",
+        updatedAt:nowISO()
+      });
       renderRows();
-      setTimeout(()=>tbody.querySelector(`[data-stat-metric="${draft.length-1}"]`)?.focus(),20);
+      setTimeout(()=>tbody.querySelector(`[data-stat-value="${draft.length-1}"]`)?.focus(),20);
     };
 
     modal.querySelector("#saveManagerStats").onclick=async()=>{
       draft=draft.map(r=>({
         id:String(r.id||uid("stat_")),
         date:String(r.date||""),
-        metric:String(r.metric||"").trim(),
+        metric:["Общее","Прилипло"].includes(String(r.metric||""))?String(r.metric):"Общее",
         value:String(r.value||"").trim(),
-        comment:String(r.comment||"").trim(),
         updatedAt:nowISO()
-      })).filter(r=>r.date||r.metric||r.value||r.comment);
+      })).filter(r=>r.date||r.value);
 
       const btn=modal.querySelector("#saveManagerStats");
       btn.disabled=true;btn.textContent="Сохраняю...";
@@ -1620,6 +1682,7 @@ const saveManagerConfigBtn=modal.querySelector("#saveManagerConfig");
           <h1>Менеджеры</h1>
           <p class="muted">Нажмите на менеджера, чтобы увидеть его проекты</p>
         </div>
+        ${me.role==="viewer"?'<button class="btn primary stats-top-button" id="openStatisticsTop">Статистика</button>':""}
       </div>
       <div class="grid">
         ${managers.map(m=>{
@@ -1641,6 +1704,8 @@ const saveManagerConfigBtn=modal.querySelector("#saveManagerConfig");
       </div>`);
 
     wireNav();
+    const openStatisticsTop=document.getElementById("openStatisticsTop");
+    if(openStatisticsTop) openStatisticsTop.onclick=()=>route("statistics");
 
     document.querySelectorAll("[data-open-manager]").forEach(el=>{
       el.onclick=(ev)=>{

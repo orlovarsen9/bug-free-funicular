@@ -121,3 +121,40 @@ https://script.google.com/macros/s/AKfycbzma6piL2URnt-8LToDYCvDBj3ud_YISuYLdJLZR
 
 Для работы обязательно обновить google_apps_script_backend.gs
 и выпустить New version Apps Script.
+
+
+## v88 — Статистика видима
+- кнопка «Статистика» принудительно добавлена в верхнее меню Наблюдателя;
+- дополнительно кнопка «Статистика» добавлена справа на странице «Менеджеры»;
+- маршрут статистики проверен;
+- self-contained index.html пересобран.
+
+
+## v89 — упрощение статистики
+- «Показатель» теперь только из двух вариантов:
+  1. Общее
+  2. Прилипло
+- поле и колонка «Комментарий» полностью удалены;
+- в Google-листе «Статистика» колонка комментария также удалена.
+
+
+## v90
+Новая ссылка Google Apps Script:
+https://script.google.com/macros/s/AKfycbycxJ2rnUtHha6ukYnyYxrgmFDYvElT0o7snt-egz-Dj8-czST2t5Bby7n3ub-XBAikWg/exec
+
+
+## v91
+1. Статистика:
+- после сохранения видна прямо на странице «Статистика» под каждым менеджером;
+- добавлен фоновый refresh;
+- добавлен fallback через saveState, если отдельный action не опубликован.
+
+2. Маркеры:
+- маркер больше НЕ вставляется в блокнот;
+- наблюдатель задаёт название маркера и список точных фраз;
+- менеджер нажимает маркер и получает отдельное окно со всеми фразами.
+
+
+## v92
+Новая ссылка Google Apps Script:
+https://script.google.com/macros/s/AKfycbxY21vNSnDTqZYXwS6rkoHiliqdSKob-wQkkgDmD9v-mX1PAgXU0SAXjC9YFg2bgD2hhw/exec
